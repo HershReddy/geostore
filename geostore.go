@@ -4,9 +4,10 @@
 // entities.  The geostore package therefore implements a simple scheme to tag your objects with geohashes, and
 // retrieve stored objects, using those geohash tags, based on location.
 
-// The basic storage scheme is inspired by the geohash method of Gustavo Niemeyer: http://en.wikipedia.org/wiki/Geohash
-// Although it uses a completely different hashing method in order to exploit Datastore's efficient string list indexing
-// and lookup, described in this talk by Brett Slatkin: https://www.youtube.com/watch?v=AgaL6NGpkB8&list=PL15849162B82ABA20
+// The basic storage scheme is inspired by the geohash method used by the Python Geomodel project for App Engine:
+// https://code.google.com/p/geomodel/
+// We exploit Datastore's efficient string list indexing and lookup as described in this talk by Brett Slatkin:
+// https://www.youtube.com/watch?v=AgaL6NGpkB8&list=PL15849162B82ABA20
 //
 // The basic scheme works as follows.  The map of the world is recursively divided into 4 by 4 grids of 16 cells each.
 // For example, the top most grid (level 0) would look like this:
@@ -330,6 +331,6 @@ func GeoBoxTagsFromViewBounds(viewbounds LatLngBounds) ([]GeoBoxTag, error) {
 	for _, suffix := range suffixes {
 		geoboxtags = append(geoboxtags, GeoBoxTag(prefix+suffix))
 	}
-	log.Printf("geoboxtags for %v: %v", viewbounds, geoboxtags)
+	log.Printf("geoboxtags for %v: \n %v \n", viewbounds, geoboxtags)
 	return geoboxtags, nil
 }
