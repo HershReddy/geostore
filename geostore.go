@@ -6,6 +6,8 @@
 
 // The basic storage scheme is inspired by the geohash method used by the Python Geomodel project for App Engine:
 // https://code.google.com/p/geomodel/
+// However Geostore is not a straight Go port of Geomodel. The implementation is different from the ground up
+// and as such, is not as robust, and most likely has corner case problems.
 // We exploit Datastore's efficient string list indexing and lookup as described in this talk by Brett Slatkin:
 // https://www.youtube.com/watch?v=AgaL6NGpkB8&list=PL15849162B82ABA20
 //
@@ -257,6 +259,7 @@ func GenerateGeoBoxTags(l Locatable) error {
 
 // Finds the GeoBoxes (i.e. cells) that are the closest approximation to the given LatLngBounds
 func GeoBoxTagsFromViewBounds(viewbounds LatLngBounds) ([]GeoBoxTag, error) {
+	var err error
 	swhasher := &Geohasher{
 		Point: viewbounds.SW,
 		Box: LatLngBounds{
@@ -273,11 +276,29 @@ func GeoBoxTagsFromViewBounds(viewbounds LatLngBounds) ([]GeoBoxTag, error) {
 		},
 		hash: "",
 	}
+	sehasher := &Geohasher{
+		Point: LatLng{viewbounds.SW.Lat, viewbounds.NE.Lng},
+		Box: LatLngBounds{
+			NE: LatLng{Lat: MAXLAT, Lng: MAXLNG},
+			SW: LatLng{Lat: MINLAT, Lng: MINLNG},
+		},
+		hash: "",
+	}
+	nwhasher := &Geohasher{
+		Point: LatLng{viewbounds.NE.Lat, viewbounds.SW.Lng},
+		Box: LatLngBounds{
+			NE: LatLng{Lat: MAXLAT, Lng: MAXLNG},
+			SW: LatLng{Lat: MINLAT, Lng: MINLNG},
+		},
+		hash: "",
+	}
 
-	// We'll keep descending to lower levels in the grid so long as the viewbounds falls strictly within a
-	// single geobox at the current level.
-	for swhasher.GetHash() == nehasher.GetHash() && swhasher.GetDepth() < MAXDEPTH {
-		err := swhasher.Descend()
+	// We'll keep descending to lower levels in the grid so long as the viewbounds dimensions are strictly smaller
+	// than the dimensions of the geoboxes at the next level down.
+	for BOXSIZES[swhasher.GetDepth()+1].Lat > math.Abs(viewbounds.NE.Lat-viewbounds.SW.Lat) &&
+		BOXSIZES[swhasher.GetDepth()+1].Lng > math.Abs(viewbounds.NE.Lng-viewbounds.SW.Lng) &&
+		swhasher.GetDepth() < MAXDEPTH {
+		err = swhasher.Descend()
 		if err != nil {
 			return nil, err
 		}
@@ -285,52 +306,119 @@ func GeoBoxTagsFromViewBounds(viewbounds LatLngBounds) ([]GeoBoxTag, error) {
 		if err != nil {
 			return nil, err
 		}
+		err = sehasher.Descend()
+		if err != nil {
+			return nil, err
+		}
+		err = nwhasher.Descend()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	swhash := swhasher.GetHash()
 	nehash := nehasher.GetHash()
-	// This case will occur only if the region being viewed is strictly within a singe geobox (cell) at the smallest depth level of
-	// of the grid.  In this case we return the tag for that smallest cell to the caller, as the entire view is in that cell
+	sehash := sehasher.GetHash()
+	nwhash := nwhasher.GetHash()
+
+	// This case will occur only if the region being viewed is strictly within a singe geobox (cell).
+	// In this case we return the hash for that geobox to the caller, as the entire viewbounds is in that cell.
+	// This case can only occur if the viewbounds is smaller than the size of the smallest geobox level.
 	if swhash == nehash {
 		return []GeoBoxTag{GeoBoxTag(swhash)}, nil
 	}
 
-	// In all other cases the hash of the NE corner and SW corner of the viewbounds will be in different geoboxes.  The hashes will be the
-	// same except for the last character in each hash.  Those last characters determine where the NE/SW corners of the view bounds fall
-	// at the current depth level. We determine the slice of GeoBoxTags to return by figuring out all the geoboxes that
-	// are between the geobox tag of the SW corner and the geobox tag of the NE corner.
-
+	// In all other cases the hash of the NE corner and SW corner of the viewbounds will be in different geoboxes.
+	// The geoboxes of the four corners of the viewbounds should all be at the same level however (same hash lengths).
 	hashlen := len(swhash)
-	if hashlen != len(nehash) {
-		return nil, Error{errmsg: "geostore error: FindGeoBoxBounds error: swhash length does not equal nehash length"}
+	if hashlen != len(nehash) || hashlen != len(sehash) || hashlen != len(nwhash) {
+		return nil, Error{errmsg: "geostore error: FindGeoBoxBounds error; viewbounds geoboxes at different depths."}
 	}
-	prefix := swhash[0 : hashlen-1]
 
-	swbox := swhash[hashlen-1 : hashlen]
-	nebox := nehash[hashlen-1 : hashlen]
-
-	swint, err := strconv.ParseInt(swbox, 16, 0)
+	geoboxtags := []GeoBoxTag{}
+	botcursor := swhash
+	topcursor := nwhash
+	endbot, err := GetEastBoxTag(sehash)
 	if err != nil {
 		return nil, err
 	}
-	neint, err := strconv.ParseInt(nebox, 16, 0)
-	if err != nil {
-		return nil, err
+	// log.Printf("topcursor: %v: botcursor: %v endbot: %v  \n", topcursor, botcursor, endbot)
+	for botcursor != endbot {
+
+		cursor := botcursor
+		endtop, err := GetNorthBoxTag(topcursor)
+		if err != nil {
+			return nil, err
+		}
+		// log.Printf("cursor: %v: endtop: %v \n", cursor, endtop)
+		for cursor != endtop {
+			geoboxtags = append(geoboxtags, GeoBoxTag(cursor))
+			// log.Printf("topcursor: %v: botcursor: %v cursor: %v  \n", topcursor, botcursor, cursor)
+			cursor, err = GetNorthBoxTag(cursor)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		botcursor, err = GetEastBoxTag(botcursor)
+		if err != nil {
+			return nil, err
+		}
+		topcursor, err = GetEastBoxTag(topcursor)
+		if err != nil {
+			return nil, err
+		}
+		// log.Printf("next topcursor: %v: next botcursor: %v \n", topcursor, botcursor)
 	}
 
-	// We will fill the suffixes slice with the single letter codes for the geoboxes that are within the viewbounds at the current depth
-	suffixes := []string{}
-	for i := swint / 4; i <= neint/4; i++ {
-		for j := swint % 4; j <= neint%4; j++ {
-			suffixes = append(suffixes, CODES[i][j])
+	// log.Printf("geoboxtags for %v: \n %v \n", viewbounds, geoboxtags)
+	return geoboxtags, nil
+}
+
+// Given a string tag, returns the tag for the geobox immediately to the north
+func GetNorthBoxTag(boxtag string) (string, error) {
+	hashlen := len(boxtag)
+	if hashlen == 0 {
+		return "", Error{errmsg: "geostore error: empty tag passed to GetNorthBox()"}
+	}
+
+	prefix := boxtag[0 : hashlen-1]
+	boxcode := boxtag[hashlen-1 : hashlen]
+	boxint, err := strconv.ParseInt(boxcode, 16, 0)
+	if err != nil {
+		return "", err
+	}
+	boxnorthint := boxint + 4
+	if boxnorthint >= 16 {
+		boxnorthint = boxnorthint - 16
+		prefix, err = GetNorthBoxTag(prefix)
+		if err != nil {
+			return "", err
 		}
 	}
+	boxnorthcode := CODES[boxnorthint/4][boxnorthint%4]
+	return prefix + boxnorthcode, nil
+}
 
-	// Now add the prefix to get the geoboxtags we need to return
-	geoboxtags := []GeoBoxTag{}
-	for _, suffix := range suffixes {
-		geoboxtags = append(geoboxtags, GeoBoxTag(prefix+suffix))
+func GetEastBoxTag(boxtag string) (string, error) {
+	hashlen := len(boxtag)
+	if hashlen == 0 {
+		return "", Error{errmsg: "geostore error: empty tag passed to GetNorthBox()"}
 	}
-	log.Printf("geoboxtags for %v: \n %v \n", viewbounds, geoboxtags)
-	return geoboxtags, nil
+	prefix := boxtag[0 : hashlen-1]
+	boxcode := boxtag[hashlen-1 : hashlen]
+	boxint, err := strconv.ParseInt(boxcode, 16, 0)
+	if err != nil {
+		return "", err
+	}
+	boxeastint := boxint + 1
+	if (boxint%4)+1 >= 4 {
+		boxeastint = boxeastint - 4
+		prefix, err = GetEastBoxTag(prefix)
+		if err != nil {
+			return "", err
+		}
+	}
+	boxeastcode := CODES[boxeastint/4][boxeastint%4]
+	return prefix + boxeastcode, nil
 }
