@@ -31,6 +31,9 @@
 // The full geocode for an object at location Lat:37.781, Lng:-122.4113 in this scheme, is the string 8E64BF8FAB, however, the
 // entity would be stored in the datastore with GeoBoxCodes consisting of every prefix substring, i.e. 8,8E, 8E6, ..., 8E64BF8FAB.
 //
+// To find an entity within a region (viewbounds) we find an efficient subset of geoboxes (cells) that intersect with the viewbounds,
+// and then fetch all the objects in the datastore that are tagged with the geocodes for those cells.
+//
 package geostore
 
 import (
