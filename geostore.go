@@ -53,6 +53,7 @@ const (
 	MAXDEPTH int     = 10
 )
 
+// An array of hash codes corresponding to the symbols for each sub-cell in a geobox.
 var CODES [4][4]string = [4][4]string{
 	{"0", "1", "2", "3"},
 	{"4", "5", "6", "7"},
@@ -85,8 +86,11 @@ type LatLngBounds struct {
 	SW LatLng `datastore:",noindex"`
 }
 
+// A hash tag that specifies a location in the geobox grid.  The length of the hash determines the accuracy
+// of the location encoded.
 type GeoBoxTag string
 
+// The Locatable interface must be implemented by entities that will be stored/retrieved using geospatial methods.
 type Locatable interface {
 	SetLocation(LatLng)
 	GetLocation() LatLng
@@ -95,10 +99,13 @@ type Locatable interface {
 	ClearGeoBoxTags()
 }
 
+// A wrapper around an App Engine context which adds some geospatial methods.
 type Store struct {
 	Context appengine.Context
 }
 
+// The Geohasher computes the hash for a location Point.  The hash will be calculated one letter at a time
+// as the Descend function is called.  Thus we can get a hash up to a desired depth.
 type Geohasher struct {
 	hash  string
 	Box   LatLngBounds
@@ -133,6 +140,8 @@ func (p LatLng) Within(b LatLngBounds) bool {
 	}
 }
 
+// Causes the Geohasher to descend to the next level in the geobox grid, adding another character to the hash
+// computed so far.
 func (g *Geohasher) Descend() error {
 
 	// if the Point is not within the Box we have a problem
@@ -187,6 +196,10 @@ func (g *Geohasher) Descend() error {
 	return nil
 }
 
+// Gets entities (that are Locatable) based on their location and the viewbounds.  This is an approximate function
+// and will return some entities that are outside the viewbounds, because the viewbounds will most likely not
+// exactly intersect with the borders of the geoboxes (cells) that serve as the tagged regions for the search
+// algorithm.
 func (s Store) GetEntitiesByRegion(viewbounds LatLngBounds, entityKind string, dst interface{}) ([]*datastore.Key, error) {
 
 	geoboxtags, err := GeoBoxTagsFromViewBounds(viewbounds)
@@ -212,6 +225,7 @@ func (s Store) GetAllEntities(entityKind string, dst interface{}, limit int) ([]
 	return keys, err
 }
 
+// Store a Locatable entity in the datastore.  This method will generate the geoboxtags for the Locatable.
 func (s Store) StoreEntity(entityKind string, entity Locatable) error {
 
 	err := GenerateGeoBoxTags(entity)
@@ -229,6 +243,7 @@ func (s Store) StoreEntity(entityKind string, entity Locatable) error {
 	return nil
 }
 
+// Generate the geoboxtags that apply to a Locatable, based on its location.
 func GenerateGeoBoxTags(l Locatable) error {
 	g := &Geohasher{
 		Point: l.GetLocation(),
@@ -378,7 +393,7 @@ func GeoBoxTagsFromViewBounds(viewbounds LatLngBounds) ([]GeoBoxTag, error) {
 	return geoboxtags, nil
 }
 
-// Given a string tag, returns the tag for the geobox immediately to the north
+// Given a string tag, returns the tag for the geobox, at the same depth, immediately to the north
 func GetNorthBoxTag(boxtag string) (string, error) {
 	hashlen := len(boxtag)
 	if hashlen == 0 {
@@ -403,10 +418,11 @@ func GetNorthBoxTag(boxtag string) (string, error) {
 	return prefix + boxnorthcode, nil
 }
 
+// Given a string tag, returns the tag for the geobox, at the same depth, immediately to the east
 func GetEastBoxTag(boxtag string) (string, error) {
 	hashlen := len(boxtag)
 	if hashlen == 0 {
-		return "", Error{errmsg: "geostore error: empty tag passed to GetNorthBox()"}
+		return "", Error{errmsg: "geostore error: empty tag passed to GetEastBox()"}
 	}
 	prefix := boxtag[0 : hashlen-1]
 	boxcode := boxtag[hashlen-1 : hashlen]
